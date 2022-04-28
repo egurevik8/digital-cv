@@ -43,7 +43,7 @@ _Strong passion for data analytics and engineering, especially as it pertains to
   - _Data Set: Pixel information from images extracted from personal instagram account._
   - _Calculated average pixel color of every image from instagram account by creating a DataFrame to store all of the individual pixels and using `pandas` to find the average._
   - _Created mosaic using data from data analysis and simulations by using `sys`, `math`, `PIL`, and from `PIL` import `Image`._
-  - ***Technology Used: Python (`pandas`, `random`, `sys`, `math`, `PIL`, from `PIL` import `Image`.***
+  - ***Technology Used: Python (`pandas`, `random`, `sys`, `math`, `PIL`, `Image` from `PIL`.***
 
 **Urban Sea Level Rise: Miami Case Study** _(February-March 2022)_
   - _Data Set: Landsat 8 Image Collection
@@ -57,7 +57,7 @@ _Strong passion for data analytics and engineering, especially as it pertains to
   - _Data Set: University of Texas Good Systems and ATCEMS incidents data._
   - _Advanced data analysis using python libraries._
   - _Used machine learning and hypothesis testing to predict future response times based off of varying factors of pre-hospital medicine._
-  - ***Technology Used: Python (`pandas`, `SciPy`, `math`, from `sklearn.linear_model` import `LinearRegression`).***
+  - ***Technology Used: Python (`pandas`, `SciPy`, `math`, `LinearRegression` from `sklearn.linear_model`).***
 
 **Bangladesh River Flooding GIS Product: Flood Searcher** _(April-May 2022)_
   - _Data Set: Global Flood Database v1 (2000-2018)._
