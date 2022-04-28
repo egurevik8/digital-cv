@@ -1,0 +1,311 @@
+var gfd = ee.ImageCollection("GLOBAL_FLOOD_DB/MODIS_EVENTS/V1"),
+    s1 = ee.ImageCollection("COPERNICUS/S1_GRD"),
+    countries = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017"),
+    jrcPop = ee.ImageCollection("JRC/GHSL/P2016/POP_GPW_GLOBE_V1"),
+    jrcWater = ee.Image("JRC/GSW1_3/GlobalSurfaceWater"),
+    WorldPop = ee.ImageCollection("WorldPop/GP/100m/pop"),
+    geometry = /* color: #d63000 */ee.Geometry.MultiPoint();
+
+// FloodSAR
+
+//-----Input-----//
+var id = 4282; //flood id
+var aoi = countries.filterMetadata("country_co","equals", "BG");
+var diff_threshold = 4; //may need to change for trial/error
+var polarization = 'VV';
+var pass_direction = 'DESCENDING';
+// Check getWeeklySentinelComposite function for polarization/pass direction inputs!
+
+// Printing + summarizing flood
+var flood = ee.Image(gfd.filterMetadata('id', 'equals', id).first());
+var began = ee.Date(flood.get('began')).getRelative('day','year');
+var ended = ee.Date(flood.get('ended')).getRelative('day','year');
+var duration = ended.subtract(began);
+print('Dartmouth Flood Observatory Estimates:',flood,
+      'Flood id:', flood.get('id'),
+      'Flood Dates:', flood.get('began'), flood.get('ended'),
+      'Duration', duration,
+      'Cause:', flood.get('dfo_main_cause'),
+      'People affected:', flood.get('dfo_displaced'));
+
+
+// Building S1 collection
+function getWeeklySentinelComposite(date) { // Composite the Sentinel-1 ImageCollection for 7 days (inclusive)
+  var date = ee.Date(date);
+  var smoothing_radius = 50;
+  var sentinel1 = ee.ImageCollection(s1)
+                      .filterDate(date, date.advance(1, 'week'))
+                      .filter(ee.Filter.listContains(
+                          'transmitterReceiverPolarisation', polarization))
+                      .filter(ee.Filter.eq('instrumentMode', 'IW'))
+                      .filter(ee.Filter.eq('orbitProperties_pass', pass_direction))
+                      .select(polarization)
+                      .filterBounds(aoi)
+                      .mean();
+                      //.focal_mean(smoothing_radius,'circle','meters');
+  //print(sentinel1);
+  return sentinel1.clip(aoi);
+}
+
+//create images for Bangladesh (2015), y indicates scenes available. coded for descending
+//                                                            DESC
+var img_07_01 = getWeeklySentinelComposite('2015-07-01'); //partial east    
+var img_07_08 = getWeeklySentinelComposite('2015-07-08'); //partial west
+var img_07_15 = getWeeklySentinelComposite('2015-07-15'); // n                                  dfo start
+var img_07_22 = getWeeklySentinelComposite('2015-07-22'); //partial west
+var img_07_29 = getWeeklySentinelComposite('2015-07-29'); // n
+var img_08_05 = getWeeklySentinelComposite('2015-08-05'); // n
+var img_08_12 = getWeeklySentinelComposite('2015-08-12'); // partial
+var img_08_19 = getWeeklySentinelComposite('2015-08-19'); // partial                            dfo end
+var img_08_26 = getWeeklySentinelComposite('2015-08-26'); // n
+
+// Map.addLayer(img_07_01, sentinel1Viz, '2015-07-01'); 
+// Map.addLayer(img_07_08, sentinel1Viz, '2015-07-08');
+// Map.addLayer(img_07_15, sentinel1Viz, '2015-07-15'); // dfo start
+// Map.addLayer(img_07_22, sentinel1Viz, '2015-07-22'); 
+// Map.addLayer(img_07_29, sentinel1Viz, '2015-07-29'); 
+// Map.addLayer(img_08_05, sentinel1Viz, '2016-08-05'); 
+// Map.addLayer(img_08_12, sentinel1Viz, '2016-08-12'); 
+// Map.addLayer(img_08_19, sentinel1Viz, '2016-08-19'); // dfo end
+// Map.addLayer(img_08_26, sentinel1Viz, '2016-08-26');
+
+//Combining available data into useable images
+//Pre Flood
+var preFlood = ee.ImageCollection([img_07_01, img_07_08]).mean();
+
+//Flood
+var flood = ee.ImageCollection([img_08_12, img_08_19]).mean();
+
+// apply difference calculation to image
+var diff_raw = preFlood.subtract(flood);
+
+// Improving flood results
+var floodRefine = function(img) {
+      // Include JRC layer on surface water seasonality to mask flood pixels from areas
+      // of "permanent" water (where there is water > 10 months of the year)
+      var swater = ee.Image('JRC/GSW1_3/GlobalSurfaceWater').select('seasonality');
+      var swater_mask = swater.gte(12).updateMask(swater.gte(12));
+      
+      // Flooded layer where year-round water bodies is assigned a 0 value
+      var flooded_mask = img.where(swater_mask,0);
+      // final flooded area without pixels in perennial waterbodies
+      var flooded = flooded_mask.updateMask(flooded_mask);
+      
+      // Mask out areas with more than 5 percent slope using a Digital Elevation Model 
+      var dem = ee.Image('NASA/NASADEM_HGT/001');
+      var terrain = ee.Terrain.products(dem);
+      var slope = terrain.select('slope');
+      var flooded = flooded.updateMask(slope.lt(3));
+      
+      // Compute connectivity of pixels to eliminate those connected to 8 or fewer neighbours
+      // This operation reduces noise of the flood extent product 
+      var connections = flooded.connectedPixelCount();    
+      var flooded = flooded.updateMask(connections.gte(10));
+      
+      return flooded;
+};
+
+//threshold change image to produce flood extent
+//convert filtered floodextent to image collection for refining of flood results
+var floodedCol = ee.ImageCollection(diff_raw.gt(diff_threshold)).map(floodRefine);
+
+//since there is only one image in the collection, .first() to convert back to image
+var flooded = floodedCol.first();
+
+
+//------------Area Flooded------------//
+
+//Flooded area extent - because there is a 1/0 binary layer, this method will work.
+var floodedPixelArea = flooded.multiply(ee.Image.pixelArea());
+
+var floodedArea = floodedPixelArea.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10, //10m S1 pixels
+  maxPixels: 1e12,
+  bestEffort: true
+});
+
+var areaHec = ee.Number(floodedArea.getNumber(polarization)).divide(10000).round();
+
+//------------Human pop impacts------------//
+
+// var popCountWorldPop = WorldPop.filterMetadata('country','equals','BGD')
+//                         .filterMetadata('year','equals',2015)
+//                         .select('population')
+//                         .first()
+//                         .clip(aoi);
+
+var popCount = jrcPop.filterDate('2015-01-01','2015-12-31')
+                        .select('population_count')
+                        .first()
+                        .clip(aoi);
+
+// Mask method 2, reprojecting
+//retrieve projection information
+var JRCPopProj = popCount.projection();
+var floodedResPop = flooded.reproject({crs: JRCPopProj});
+
+//Mask
+var popAffected = popCount.updateMask(floodedResPop).updateMask(popCount);
+
+//Get integer of # people affected
+var popCountReduced = popAffected.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 250,
+  maxPixels: 1e12,
+  bestEffort: true
+});
+
+var affectedPop = ee.Number(popCountReduced.get('population_count')).round();
+
+
+//------------Land cover impact generation------------//
+
+//Prep Land cover
+var LC = ee.Image('COPERNICUS/Landcover/100m/Proba-V-C3/Global/2015')
+  .select('discrete_classification')
+  .clip(aoi);
+
+// Simplfy land cover classes
+var fromList =  [0, 20, 30, 40, 50, 60, 70, 80, 90, 100, 111, 112, 113, 114, 115, 116, 121, 122, 123, 124, 125, 126, 200];
+var toList =    [99, 20, 30, 40, 50, 60, 99, 80, 90, 100, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 80];
+// new LC
+var LC = LC.remap({
+  from: fromList,
+  to: toList,
+  defaultValue: 0,
+  bandName: 'discrete_classification'
+});
+
+//Reprojecting
+//retrieve projection information
+var LCProj = LC.projection();
+var floodedResLC = flooded.reproject({crs: LCProj});
+
+//Mask
+var LCAffected = LC.updateMask(floodedResLC).updateMask(LC); //floodedResLC
+
+
+//-------------------Chart Products-------------------//
+
+//--------Land Cover--------//
+
+//Flooded area by LC class
+//Create frequency 'table' of pixels. Since LC resolution is 100m, pixel count = hectares
+    // 100m x 100m = 10,000m2 / 10,000 = 1 hectare!
+var frequency = LCAffected.reduceRegion({
+  reducer:ee.Reducer.frequencyHistogram(),
+  scale: 100,
+  maxPixels:2e9,
+  geometry:aoi
+});
+
+//save to dictionary and print
+var freqDict = ee.Dictionary(frequency.get('remapped'));
+var freqDict = freqDict.map(function(k,v){
+  return ee.Number(v).round();
+});
+
+
+// Area Chart
+var areaLCchart = ui.Chart.feature.byProperty(
+  ee.Feature(null, freqDict))
+  .setOptions({
+    title: 'Flooded area by Land Cover Type',
+    hAxis: {title: 'Land Cover Type'},
+    vAxis: {title: 'Hectares of Flooded Area'}});
+
+
+// Percentage dictionary
+var sum = ee.Array(freqDict.values()).reduce(ee.Reducer.sum(),[0]).get([0]);
+var pctDict = freqDict.map(function(k,v) {
+  return ee.Number(v).divide(sum).multiply(100);
+});
+
+// Land Cover products
+print('Land Cover Flooded by Class in Hectares', freqDict);
+print(areaLCchart);
+print('Land Cover %', pctDict);
+
+
+//--------Pop Impact--------//
+
+// scatter chart of affected population pixel values
+// as each pixel represents the #of people within 6.25 ha, it represents pop density.
+// chart will show how different densities of people were impacted.
+var popDensityChart =
+  ui.Chart.image.histogram({image: popAffected, region:aoi, scale: 250})
+      .setSeriesNames(['population_count'])
+      .setChartType('ScatterChart')
+      .setOptions({
+        title: 'population densities affected'
+      });
+print(popDensityChart);
+print('Number of people affected:', affectedPop);
+
+
+
+//------------Map Visualization------------//
+
+// Sentinel 1
+var sentinel1Viz = {min: -28, max: 3.4, palette: ['black',  'white']};
+
+Map.addLayer(preFlood, sentinel1Viz, 'pre-flood',0);
+Map.addLayer(flood, sentinel1Viz, 'flood',0);
+Map.addLayer(diff_raw,{},'Raw Difference',0);
+//Map.addLayer(floodedResLC,{},'flooded reproj for LC');
+
+// Flooded extent
+var floodpal = {palette:'0FACFF'};
+Map.addLayer(
+  flooded,
+  floodpal, //'085AFF'
+  'flooded',0);
+
+// DEM
+var DEM = ee.Image('NASA/NASADEM_HGT/001').select('elevation').clip(aoi);
+var DEMviz = {
+  min:1,
+  max:75,
+  palette: ["black", "violet", "blue", "green","yellow", "orange", "red", "white"]
+};
+Map.addLayer(DEM,DEMviz,'DEM',0);
+
+
+// permanent water
+var permWater = ee.Image('JRC/GSW1_3/GlobalSurfaceWater').select('seasonality').gte(12);
+Map.addLayer(
+  permWater.clip(aoi).selfMask(),
+  {min:0, max:1, palette: 'C3EFFE'},
+  'JRC Permanent Water',0);
+
+
+// population
+var PopVizM = {
+  min: 60,
+  max: 1650,
+  palette:['white','red']
+};
+
+var PopVizTotal = {
+  min: 0,
+  max: 1650,
+  palette:['white','red']
+};
+Map.addLayer(popAffected,PopVizTotal,'pop count masked',0);
+Map.addLayer(popCount,{},'Total Bangladesh Population Map 2015',0);
+
+
+
+
+Map.addLayer(aoi,{}, 'aoi',0);
+
+//-----MISC--------//
+// print('pop projection',popCount.projection());
+// print('lc rojection',LC.projection());
+// print('flood projection',flooded.projection());
+
+Map.setOptions('SATELLITE');
+//Map.centerObject(aoi, 7);
