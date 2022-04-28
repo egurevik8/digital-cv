@@ -1,0 +1,74 @@
+var gfd = ee.ImageCollection("GLOBAL_FLOOD_DB/MODIS_EVENTS/V1"),
+    geometry = /* color: #98ff00 */ee.Geometry.Point([-79.94513802300622, 32.76368070040655]);
+// Flood Search Tool
+
+// Objective: placing geometry feed to a search function to find relevant floods
+// within a time span and produce results.
+
+// Inputs: Time range of interest, search radius, geometry.
+var startdate = '2014-10-03'; // Max range Oct 3 2014 (S1) - Dec 10 2018(DFO)
+var enddate = '2018-12-10';
+var radius = 100; // search radius in kilometers.
+var poi = geometry; // please update your geometry for a new search!
+var stat = 'dfo_displaced'; //the numerical property to sort and pick floods from.
+
+// Searching the database
+var radius = ee.Number(radius).multiply(1000);
+var aoi = ee.FeatureCollection(poi.buffer(radius));
+var subset = gfd.filterDate(startdate,enddate).filterBounds(poi.buffer(radius));
+print(subset);
+
+// Pick a flood:
+// by metric
+var flood_metric = subset.sort(stat,false).first(); //sort descending (most # impacted)
+print(flood_metric);
+
+// Or search by ID
+var flood_id = ee.Image(gfd.filterMetadata('id', 'equals', 4318).first());
+print(flood_id);
+
+// Selection
+var flood = flood_id; //or flood_id
+
+// Summarize selected
+print('Flood id:', flood.get('id'),
+      'Flood Dates:', flood.get('began'), flood.get('ended'),
+      'Cause:', flood.get('dfo_main_cause'),
+      'People affected:', flood.get('dfo_displaced'));
+
+// Visualization
+var styling = {color:'red', fillColor:'00000000'};
+Map.centerObject(flood, 9);
+Map.setOptions('SATELLITE');
+
+// floodviz
+{
+  //inundation extent
+Map.addLayer(
+  flood.select('flooded').selfMask(),
+  {min: 0, max: 1, palette: '001133'},
+  'Inundation Extent',0);
+
+// The duration (number of days a flood event lasted).
+var durationPalette = ['C3EFFE', '1341E8', '051CB0', '001133'];
+Map.addLayer(
+  flood.select('duration').selfMask(),
+  {min: 0, max: 4, palette: durationPalette},
+  'Duration',0);
+
+// Map all floods to generate the satellite-observed historical flood plain.
+var gfdFloodedSum = gfd.select('flooded').sum();
+Map.addLayer(
+  gfdFloodedSum.selfMask(),
+  {min: 0, max: 10, palette: durationPalette},
+  'GFD Satellite Observed Flood Plain',0);
+
+// Overlay permanent water to distinguish flood water.
+var jrc = gfd.select('jrc_perm_water').sum().gte(1);
+Map.addLayer(
+  jrc.selfMask(),
+  {min: 0, max: 1, palette: 'C3EFFE'},
+  'JRC Permanent Water',0);
+}
+//search area
+Map.addLayer(aoi.style(styling));
